@@ -1,0 +1,77 @@
+name: Build IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Download source
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: WireGuard/go.mod
+          cache-dependency-path: WireGuard/go.sum
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: |
+          chmod +x scripts/build-wireguard.sh
+          xcodegen generate
+
+      - name: Build unsigned app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project Tether.xcodeproj \
+            -scheme Tether \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/TetherBuild" \
+            APP_BUNDLE_ID=com.personal.tether \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            build 2>&1 | tee "$RUNNER_TEMP/tether-build.log"
+
+      - name: Package IPA
+        run: |
+          mkdir -p "$RUNNER_TEMP/TetherIPA/Payload"
+          ditto \
+            "$RUNNER_TEMP/TetherBuild/Build/Products/Release-iphoneos/Tether.app" \
+            "$RUNNER_TEMP/TetherIPA/Payload/Tether.app"
+          cd "$RUNNER_TEMP/TetherIPA"
+          /usr/bin/zip -qry Tether-unsigned.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tether-unsigned
+          path: ${{ runner.temp }}/TetherIPA/Tether-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tether-build-log
+          path: ${{ runner.temp }}/tether-build.log
+          if-no-files-found: ignore
